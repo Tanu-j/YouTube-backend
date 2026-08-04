@@ -8,7 +8,7 @@ export const extractionQueue =
                     .MAX_CONCURRENT || 2
             ),
 
-        timeout: 25000,
+        timeout: 120000,
 
         // throwOnTimeout: true,
     });
