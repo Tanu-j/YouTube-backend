@@ -18,11 +18,18 @@ import {
 } from "./yt";
 import downloadRoute from "./dt-route";
 import { writeCookiesFromEnv } from "./startup-cookies";
+import { sweepOldCacheFiles } from "./utils/temp-file";
 
 // Must run before any route can trigger fetchAudio(), so YT_COOKIES
 // is already pointing at a real file by the time the first request
 // comes in.
 writeCookiesFromEnv();
+
+// sweepOldCacheFiles existed but was never called anywhere — without
+// this, downloaded/cached files under the temp dir accumulate forever
+// on a long-running container. Run once at boot, then every hour.
+sweepOldCacheFiles();
+setInterval(() => sweepOldCacheFiles(), 60 * 60 * 1000);
 
 const app = express();
 

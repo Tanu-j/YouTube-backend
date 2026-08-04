@@ -1,1 +1,1 @@
-yt-dlp --cookies-from-browser chrome --cookies cookies.txt
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"

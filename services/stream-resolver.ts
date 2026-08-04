@@ -1,6 +1,7 @@
 import { audioCache, staleCache, cacheKey } from "../cache";
 import { extractionQueue } from "../queue";
 import { fetchAudio } from "../yt";
+import { getCdnRequestHeaders } from "./cdn-headers";
 
 export interface ResolvedStream {
     url: string;
@@ -13,7 +14,14 @@ async function isUrlAlive(url: string): Promise<boolean> {
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(url, { method: "HEAD", signal: controller.signal });
+        // Same header requirement as the actual download fetch — without
+        // these, a perfectly valid cached URL can come back non-ok here
+        // and trigger an unnecessary re-extraction.
+        const res = await fetch(url, {
+            method: "HEAD",
+            signal: controller.signal,
+            headers: getCdnRequestHeaders(),
+        });
         clearTimeout(timeout);
         return res.ok;
     } catch {
