@@ -17,6 +17,12 @@ import {
     fetchAudio,
 } from "./yt";
 import downloadRoute from "./dt-route";
+import { writeCookiesFromEnv } from "./startup-cookies";
+
+// Must run before any route can trigger fetchAudio(), so YT_COOKIES
+// is already pointing at a real file by the time the first request
+// comes in.
+writeCookiesFromEnv();
 
 const app = express();
 
