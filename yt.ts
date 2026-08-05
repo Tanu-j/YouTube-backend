@@ -1,105 +1,124 @@
 import fs from "fs";
 import ytdlp from "yt-dlp-exec";
 
-export async function fetchAudio(videoId: string) {
-    const url = `https://www.youtube.com/watch?v=${videoId}`;
+export interface ExtractedAudio {
+    title?: string;
+    duration?: number;
+    thumbnail?: string;
+    url: string;
+    formatId?: string;
+    ext?: string;
+    acodec?: string;
+    vcodec?: string;
+    abr?: number;
+    httpHeaders?: Record<string, string>;
+}
 
+type ClientName = "android" | "web" | "ios" | "default";
+
+// Remember the client that most recently succeeded. This makes a Railway
+// process converge on the working extractor instead of paying for the same
+// failed client attempts on every new song.
+let preferredClient: ClientName = "android";
+
+const CLIENTS: ClientName[] = ["android", "default", "web", "ios"];
+
+function orderedClients(): ClientName[] {
+    return [
+        preferredClient,
+        ...CLIENTS.filter((client) => client !== preferredClient),
+    ];
+}
+
+function clientArgs(client: ClientName): string | undefined {
+    if (client === "default") return undefined;
+    return `youtube:player_client=${client}`;
+}
+
+function chooseAudioFormat(formats: any[]) {
+    return formats
+        .filter((f: any) =>
+            Boolean(f?.url) &&
+            Boolean(f?.acodec) &&
+            f.acodec !== "none" &&
+            f?.vcodec === "none"
+        )
+        .sort((a: any, b: any) => {
+            const aM4a = a.ext === "m4a" || String(a.acodec || "").includes("mp4a");
+            const bM4a = b.ext === "m4a" || String(b.acodec || "").includes("mp4a");
+
+            // Mobile-friendly AAC/M4A first; within the same codec family,
+            // choose the highest bitrate.
+            if (aM4a !== bM4a) return aM4a ? -1 : 1;
+            return Number(b.abr || 0) - Number(a.abr || 0);
+        })[0];
+}
+
+export async function fetchAudio(videoId: string): Promise<ExtractedAudio> {
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const cookies = process.env.YT_COOKIES;
-    const cookieOption = cookies && fs.existsSync(cookies) ? { cookies } : {};
+    const hasCookies = Boolean(cookies && fs.existsSync(cookies));
 
-    if (!cookies) {
-        console.warn("YT_COOKIES not set — bot-check errors are likely on hosted IPs.");
-    } else if (!fs.existsSync(cookies)) {
-        console.warn(`YT_COOKIES points to "${cookies}" but that file doesn't exist.`);
-    }
+    const cookieOption = hasCookies ? { cookies } : {};
 
     const baseOptions: any = {
         dumpSingleJson: true,
-        format: "bestaudio/best",
         noPlaylist: true,
         noWarnings: true,
-        retries: 5,
-        fragmentRetries: 5,
-        socketTimeout: 30000,
-        preferFreeFormats: true,
+        // This is metadata/URL extraction, not media downloading. Large
+        // retry counts make every failed client painfully slow.
+        retries: 2,
+        fragmentRetries: 2,
+        socketTimeout: 15000,
         skipDownload: true,
         ...cookieOption,
     };
 
-    // Try a few different player clients — YouTube's bot-detection doesn't
-    // treat them equally, and which one currently works shifts over time.
-    // Cookies (if present) are applied on every attempt via baseOptions.
-    const attempts = [
-        { ...baseOptions, extractorArgs: "youtube:player_client=android" },
-        { ...baseOptions, extractorArgs: "youtube:player_client=web" },
-        { ...baseOptions, extractorArgs: "youtube:player_client=ios" },
-        { ...baseOptions }, // no forced client — let yt-dlp pick its default
-    ];
-
     let lastError: any;
 
-    for (const options of attempts) {
+    for (const client of orderedClients()) {
         try {
-            const info: any = await ytdlp(url, options);
+            const extractorArgs = clientArgs(client);
+            const options = extractorArgs
+                ? { ...baseOptions, extractorArgs }
+                : baseOptions;
 
-            // Select only audio-only formats
-            const audioFormats = (info.formats || [])
-                .filter(
-                    (f: any) =>
-                        f.url &&
-                        f.acodec &&
-                        f.acodec !== "none" &&
-                        f.vcodec === "none"
-                )
-                .sort((a: any, b: any) => {
-                    const abrA = Number(a.abr || 0);
-                    const abrB = Number(b.abr || 0);
-                    return abrB - abrA;
-                });
-
-            const selected = audioFormats[0];
+            const info: any = await ytdlp(watchUrl, options);
+            const formats = Array.isArray(info.formats) ? info.formats : [];
+            const selected = chooseAudioFormat(formats);
 
             if (!selected) {
-                console.log("NO AUDIO FORMAT FOUND");
-                console.log(JSON.stringify(info).slice(0, 2000));
-                lastError = new Error("NO_AUDIO");
+                lastError = new Error(`NO_AUDIO_FORMAT:${client}`);
                 continue;
             }
 
-            console.log("Selected format:", {
-                itag: selected.format_id,
-                ext: selected.ext,
-                mime: selected.mime_type,
-                abr: selected.abr,
-                acodec: selected.acodec,
-                vcodec: selected.vcodec,
-            });
+            // Adapt to the working client for subsequent songs.
+            preferredClient = client;
 
             return {
                 title: info.title,
                 duration: info.duration,
                 thumbnail: info.thumbnail,
                 url: selected.url,
+                formatId: selected.format_id,
+                ext: selected.ext,
+                acodec: selected.acodec,
+                vcodec: selected.vcodec,
+                abr: selected.abr,
+                httpHeaders: selected.http_headers,
             };
         } catch (error: any) {
             lastError = error;
-            console.error("fetchAudio attempt failed:", error.message);
+            const message = String(error?.message || error);
+            const lower = message.toLowerCase();
 
-            const msg = String(error.message || "").toLowerCase();
-
-            // Truly permanent: no client/cookie combination will fix these,
-            // so stop retrying immediately.
             const permanent =
-                msg.includes("private video") ||
-                msg.includes("video unavailable") ||
-                msg.includes("copyright") ||
-                msg.includes("this video is not available") ||
-                msg.includes("account associated with this video has been terminated");
+                lower.includes("private video") ||
+                lower.includes("video unavailable") ||
+                lower.includes("this video is not available") ||
+                lower.includes("copyright") ||
+                lower.includes("account associated with this video has been terminated");
 
-            // Bot-check ("Sign in to confirm you're not a bot") is NOT
-            // permanent — it's IP/client-reputation based, so a different
-            // player_client (or cookies, if not already applied) might
-            // succeed on the next attempt. Let the loop continue.
             if (permanent) break;
         }
     }

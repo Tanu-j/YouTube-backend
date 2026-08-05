@@ -12,14 +12,15 @@ The server provides fast audio URL extraction, direct streaming, downloadable au
 - 🚀 High-speed direct audio streaming
 - 📥 Download audio in multiple formats
 - 🎼 Automatic ID3 metadata embedding
-- 🖼️ Album artwork embedding
+- 🖼️ High-resolution album artwork embedding, with automatic fallback
 - ⚡ Intelligent in-memory caching
 - 🔄 Stale cache fallback
 - 📈 Download progress tracking
 - 🧹 Automatic temporary file cleanup
-- 🎯 FFmpeg transcoding
+- 🎯 FFmpeg transcoding, with stream-copy when re-encoding isn't needed
 - 💾 Download cache for instant repeat downloads
-- 🚦 Built-in rate limiting
+- 🔌 Keep-alive CDN connections (no handshake-per-request overhead)
+- 🚦 Built-in rate limiting, tuned per route
 - 🌐 CORS enabled
 - ⏱ Timeout protection
 - 📦 Queue-based extraction
@@ -36,9 +37,7 @@ The server provides fast audio URL extraction, direct streaming, downloadable au
 - FFmpeg
 - Axios
 - NodeCache
-- yt-dlp
-- youtubei.js
-- @distube/ytdl-core
+- yt-dlp (via `yt-dlp-exec`)
 
 ---
 
@@ -85,6 +84,14 @@ STALE_CACHE_TTL=
 TRUST_PROXY=
 
 DEBUG_FFMPEG=
+
+MAX_CONCURRENT=
+
+YT_COOKIES=
+
+YT_COOKIES_CONTENT=
+
+BACKEND_URL=
 ```
 
 ---
@@ -186,22 +193,36 @@ Response
 GET /download/:videoId
 ```
 
-Downloads audio with embedded metadata.
+Downloads audio with embedded metadata and artwork.
 
 ### Query Parameters
 
-| Parameter | Description |
-|-----------|-------------|
-| format | mp3, m4a, opus, flac, wav |
-| quality | Audio bitrate |
-| title | Song title |
-| artist | Artist name |
-| artwork | Artwork URL |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| format | mp3, m4a, opus, flac, wav | `mp3` |
+| quality | Audio bitrate (kbps). `0` maps to 320k for mp3, 160k for opus | `0` |
+| title | Song title | video id |
+| artist | Artist name | — |
+| artwork | Artwork URL override | auto (see Artwork below) |
 
 Example
 
 ```
 /download/dQw4w9WgXcQ?format=mp3&quality=320
+```
+
+### Artwork resolution
+
+When no `artwork` URL is supplied, the server tries YouTube's static thumbnail
+tiers from highest to lowest resolution and embeds the first one that
+actually exists for that video:
+
+```
+maxresdefault.jpg  (1280x720, when available)
+        ↓ falls back if missing
+sddefault.jpg      (640x480)
+        ↓ falls back if missing
+hqdefault.jpg      (480x360, always available)
 ```
 
 ---
@@ -212,15 +233,21 @@ Example
 GET /download-stream/:videoId
 ```
 
-Streams audio directly to the client without writing files to disk.
+Streams audio directly to the client without writing files to disk or
+waiting for the full pipeline (no ID3/artwork embedding on this route).
+Lower latency to first byte than `/download`.
 
 Supports
 
-- MP3
+- MP3 (default)
 - M4A
 - OPUS
 - WAV
 - FLAC
+
+If the requested format already matches the source codec (e.g. `opus`
+when YouTube's source stream is already Opus-encoded), the audio is
+stream-copied instead of re-encoded — same output, far less CPU/time.
 
 ---
 
@@ -234,36 +261,55 @@ Example response
 
 ```json
 {
-    "progress": 72
+    "progress": 72,
+    "status": "downloading"
 }
 ```
+
+`status` is one of `downloading`, `completed`, or `failed`. A `failed`
+response also includes an `error` field. This endpoint has its own,
+higher rate limit (600 requests/minute) separate from the rest of the
+API, since clients typically poll it every second per active download.
 
 ---
 
 # Supported Formats
 
-| Format | Supported |
-|---------|-----------|
-| MP3 | ✅ |
-| M4A | ✅ |
-| OPUS | ✅ |
-| FLAC | ✅ |
-| WAV | ✅ |
+| Format | Supported | Default on |
+|---------|-----------|------------|
+| MP3 | ✅ | `/download` and `/download-stream` |
+| M4A | ✅ | — |
+| OPUS | ✅ | — |
+| FLAC | ✅ | — |
+| WAV | ✅ | — |
 
 ---
 
 # Performance Optimizations
 
-- In-memory caching
-- Stale cache fallback
-- Queue-based extraction
-- Download cache reuse
-- Stream URL reuse
-- Automatic timeout handling
-- Temporary file cleanup
-- Efficient FFmpeg pipeline
-- Direct streaming without disk writes
-- Metadata written only when required
+- In-memory caching (audio metadata + stream URLs)
+- Stale cache fallback when live extraction fails
+- Queue-based extraction (bounded concurrency for yt-dlp)
+- Download cache reuse (repeat downloads of the same video/format/quality skip re-encoding entirely)
+- Stream URL reuse across `/audio`, `/play`, `/download`, and `/download-stream`
+- Keep-alive HTTP agent shared across all CDN requests (`/play`, `/download`, `/download-stream`) — avoids a fresh TCP/TLS handshake on every request
+- Stream-copy instead of re-encode when the source codec already matches the requested output format (currently applies to opus)
+- In-flight request de-duplication — concurrent requests for the same video share one extraction instead of triggering duplicate yt-dlp runs
+- Automatic timeout handling on extraction and CDN requests
+- Temporary file cleanup (hourly sweep of stale cached files)
+- Direct streaming without disk writes on `/download-stream`
+- Metadata (ID3 tags) written only when required
+- Dedicated, higher-throughput rate limit for progress polling so it can't be starved by the rest of the API's traffic
+
+### A note on download speed
+
+Download progress on `/download` and `/download-stream` climbs roughly
+in step with real time because YouTube's CDN paces long single-connection
+downloads close to real-time playback speed — this is upstream throttling
+behavior, not something this backend controls. `/download-stream` gets
+you a faster *time to first byte* since it doesn't wait for the full file
+before responding, and the stream-copy fast path above avoids adding any
+extra re-encode time on top of that transfer.
 
 ---
 
@@ -306,19 +352,16 @@ Client
 Validate Video ID
     │
     ▼
-Resolve Stream URL
+Resolve Stream URL (cache → stale cache → yt-dlp)
     │
     ▼
-Download Audio
+Download Audio  ─┬─ Download Artwork  (run concurrently)
+    │             │
+    ▼             ▼
+Transcode (skipped/stream-copied when source already matches format)
     │
     ▼
-Transcode (if required)
-    │
-    ▼
-Download Artwork
-    │
-    ▼
-Embed ID3 Metadata
+Embed ID3 Metadata + Artwork
     │
     ▼
 Cache Final File
@@ -331,7 +374,7 @@ Return Download
 
 # Security
 
-- Request rate limiting
+- Request rate limiting (global + a separate limiter for progress polling)
 - Video ID validation
 - Filename sanitization
 - Timeout protection
@@ -389,12 +432,18 @@ Download Failed
 ├── yt.ts
 ├── yt-download.ts
 ├── dt-route.ts
+├── play.ts
+├── startup-cookies.ts
 ├── services
 │   ├── artwork-service.ts
+│   ├── cdn-headers.ts
 │   ├── download-progress.ts
+│   ├── http-agents.ts
 │   ├── id3-service.ts
+│   ├── inflight.ts
 │   └── stream-resolver.ts
 ├── utils
+│   └── temp-file.ts
 ├── index.ts
 └── package.json
 ```

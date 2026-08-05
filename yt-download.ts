@@ -1,13 +1,10 @@
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import axios from "axios";
 import fs from "fs";
+import { httpsAgent } from "./services/http-agents";
 import { getStreamUrl } from "./services/stream-resolver";
 import { getCdnRequestHeaders } from "./services/cdn-headers";
-import {
-    setDownloadProgress,
-    markDownloadCompleted,
-    markDownloadFailed,
-} from "./services/download-progress";
+import { setDownloadProgress, markDownloadCompleted, markDownloadFailed } from "./services/download-progress";
 
 export function getMime(format: string) {
     const types: Record<string, string> = {
@@ -20,191 +17,345 @@ export function getMime(format: string) {
     return types[format] || "application/octet-stream";
 }
 
-interface DownloadResult {
+export interface DownloadResult {
     title: string;
     thumbnail: string;
     duration?: number;
 }
 
-// Core: resolve the stream URL once (cache-aware), pull it via HTTP,
-// pipe through ffmpeg only if a transcode is actually needed, write
-// to outputPath. Cleans up on any failure so no partial files linger.
+/**
+ * Pick ffmpeg's audio-codec arguments for a given target format.
+ *
+ * If the source is already encoded with the requested codec (e.g. the
+ * source YouTube format is Opus and the requested output is "opus"),
+ * stream-copy ("-codec:a copy") instead of decoding and re-encoding.
+ * Same audio data, same output format, just far less CPU/time spent.
+ */
+function pickAudioCodecArgs(
+    format: string,
+    quality: string,
+    sourceAcodec?: string
+): string[] {
+    const sourceIsOpus =
+        Boolean(sourceAcodec?.includes("opus"));
+
+    if (format === "opus" && sourceIsOpus) {
+        return ["-codec:a", "copy"];
+    }
+
+    const audioCodec =
+        format === "mp3"
+            ? "libmp3lame"
+            : format === "flac"
+                ? "flac"
+                : format === "wav"
+                    ? "pcm_s16le"
+                    : "libopus";
+
+    const bitrateArgs =
+        format === "mp3" || format === "opus"
+            ? [
+                "-b:a",
+                quality === "0"
+                    ? format === "mp3"
+                        ? "320k"
+                        : "160k"
+                    : `${quality}k`,
+            ]
+            : [];
+
+    return ["-codec:a", audioCodec, ...bitrateArgs];
+}
+
+
+async function openCdn(videoId: string) {
+    let resolved = await getStreamUrl(videoId, false);
+    let response = await axios.get(resolved.url, {
+        responseType: "stream",
+        timeout: 20000,
+        maxRedirects: 5,
+        validateStatus: () => true,
+        headers: getCdnRequestHeaders(),
+        httpsAgent,
+    });
+
+    if (response.status === 403 || response.status === 410) {
+        response.data?.destroy?.();
+        resolved = await getStreamUrl(videoId, true);
+        response = await axios.get(resolved.url, {
+            responseType: "stream",
+            timeout: 20000,
+            maxRedirects: 5,
+            validateStatus: () => true,
+            headers: getCdnRequestHeaders(),
+            httpsAgent,
+        });
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+        response.data?.destroy?.();
+        throw new Error(`CDN_STREAM_${response.status}`);
+    }
+
+    return { resolved, response };
+}
+
+/**
+ * Legacy disk-building API retained for callers that need a completed file.
+ * It now avoids all unnecessary work for m4a and uses the same 403-safe
+ * connection logic as the streaming route.
+ */
 export async function downloadAudioToFile(
     videoId: string,
     outputPath: string,
     format = "mp3",
     quality = "0"
 ): Promise<DownloadResult> {
-    const resolved = await getStreamUrl(videoId);
 
-    // Source is already m4a/aac from yt-dlp's format selection.
-    // If the caller wants m4a too, skip transcoding entirely — just
-    // remux/copy, which is dramatically cheaper than re-encoding.
-    const needsTranscode = format !== "m4a";
+    setDownloadProgress(videoId, 0);
 
-    // googlevideo.com CDN URLs get rejected with a 403 if the request
-    // doesn't carry headers matching a real client — a bare axios.get
-    // with no User-Agent fails even on a fresh, unexpired URL.
-    const cdnHeaders = getCdnRequestHeaders();
-
-    let response;
-    try {
-        response = await axios.get(resolved.url, {
-            responseType: "stream",
-            timeout: 15000, // connect/response timeout
-            validateStatus: (s) => s === 200 || s === 206,
-            headers: cdnHeaders,
-        });
-    } catch (err: any) {
-        // Most likely cause: the resolved URL expired between resolution
-        // and use. Force a fresh extraction once and retry.
-        console.error("Stream fetch failed, refreshing URL:", err.message);
-        const fresh = await getStreamUrl(videoId); // will re-extract since HEAD check failed
-        response = await axios.get(fresh.url, {
-            responseType: "stream",
-            timeout: 15000,
-            validateStatus: (s) => s === 200 || s === 206,
-            headers: cdnHeaders,
-        });
-    }
+    const { resolved, response } = await openCdn(videoId);
+    const source = response.data;
 
     return new Promise<DownloadResult>((resolve, reject) => {
         let ffmpeg: ChildProcessWithoutNullStreams | null = null;
         let settled = false;
-
-        // finish() no longer touches progress state directly — each
-        // outcome path (success/failure) calls the matching atomic
-        // mark* function itself, right before resolving/rejecting, so
-        // status and progress always land together, never separately.
         const finish = (fn: () => void) => {
             if (settled) return;
             settled = true;
             fn();
         };
 
-        const sourceStream = response.data;
-
-        sourceStream.on("error", (err: Error) => {
-            console.error("Source stream error:", err.message);
+        source.once("error", (err: Error) => {
             markDownloadFailed(videoId, err.message);
             finish(() => reject(err));
         });
 
-        if (!needsTranscode) {
-            // Pure remux — write bytes straight through, no CPU-bound encode.
-            const writeStream = fs.createWriteStream(outputPath);
+        if (
+            format === "m4a" &&
+            (
+                resolved.ext === "m4a" ||
+                resolved.acodec?.includes("mp4a")
+            )
+        ) {
+            const output =
+                fs.createWriteStream(
+                    outputPath
+                );
+
             let received = 0;
+            let lastProgress = -1;
 
-            sourceStream.on("data", (chunk: Buffer) => {
-                received += chunk.length;
-                // We don't have total size reliably from a range-less GET;
-                // report indeterminate progress as a heartbeat instead.
-                setDownloadProgress(videoId, Math.min(95, Math.floor(received / 1024 / 50)));
-            });
+            const total =
+                Number(
+                    response.headers[
+                    "content-length"
+                    ] || 0
+                );
 
-            writeStream.on("error", (err) => {
-                markDownloadFailed(videoId, err.message);
-                finish(() => reject(err));
-            });
-            writeStream.on("finish", () => {
-                // Atomic: progress:100 + status:"completed" written together.
-                markDownloadCompleted(videoId);
-                finish(() => resolve({ title: resolved.title, thumbnail: resolved.thumbnail }));
-            });
+            source.on(
+                "data",
+                (chunk: Buffer) => {
+                    received += chunk.length;
 
-            sourceStream.pipe(writeStream);
+                    if (total <= 0) {
+                        return;
+                    }
+
+                    const progress =
+                        Math.min(
+                            99,
+                            Math.floor(
+                                (received / total) *
+                                100
+                            )
+                        );
+
+                    if (
+                        progress !==
+                        lastProgress
+                    ) {
+                        lastProgress =
+                            progress;
+
+                        setDownloadProgress(
+                            videoId,
+                            progress
+                        );
+                    }
+                }
+                );
+
+            output.once(
+                "error",
+                (err: Error) => {
+                    markDownloadFailed(
+                        videoId,
+                        err.message
+                    );
+
+                    finish(() =>
+                        reject(err)
+                    );
+                }
+            );
+
+            output.once(
+                "finish",
+                () => {
+                    markDownloadCompleted(
+                        videoId
+                    );
+
+                    finish(() =>
+                        resolve({
+                            title:
+                                resolved.title,
+                            thumbnail:
+                                resolved.thumbnail,
+                            duration:
+                                resolved.duration,
+                        })
+                    );
+                }
+            );
+
+            source.pipe(output);
+
             return;
         }
 
-        // Transcode path (e.g. mp3 output).
-        ffmpeg = spawn("ffmpeg", [
+        const args = [
+            "-hide_banner",
+            "-loglevel", "error",
+
+            // Machine-readable progress.
+            "-progress", "pipe:2",
+            "-nostats",
+
             "-i", "pipe:0",
             "-vn",
-            "-codec:a", format === "mp3" ? "libmp3lame" : "copy",
-            "-b:a", quality === "0" ? "320k" : `${quality}k`,
+            ...pickAudioCodecArgs(format, quality, resolved.acodec),
+
             "-y",
             outputPath,
-        ]);
+        ];
+        ffmpeg = spawn("ffmpeg", args);
 
-        let ffmpegStderr = "";
-        ffmpeg.stderr.on("data", (d: Buffer) => {
-            const text = d.toString();
-            ffmpegStderr += text.slice(-2000); // keep buffer bounded
-            const match = text.match(/time=(\d{2}):(\d{2}):(\d{2})/);
-            if (match && resolved.duration) {
-                const seconds = +match[1] * 3600 + +match[2] * 60 + +match[3];
-                const pct = Math.min(99, Math.floor((seconds / resolved.duration) * 100));
-                setDownloadProgress(videoId, pct);
+        let progressBuffer = "";
+        let lastProgress = -1;
+
+        ffmpeg.stderr.on(
+            "data",
+            (chunk: Buffer) => {
+                progressBuffer +=
+                    chunk.toString();
+
+                const lines =
+                    progressBuffer.split("\n");
+
+                progressBuffer =
+                    lines.pop() || "";
+
+                for (const line of lines) {
+                    const trimmed =
+                        line.trim();
+
+                    if (
+                        !trimmed.startsWith(
+                            "out_time_ms="
+                        )
+                    ) {
+                        continue;
+                    }
+
+                    const outTimeMs =
+                        Number(
+                            trimmed.slice(
+                                "out_time_ms=".length
+                            )
+                        );
+
+                    if (
+                        !Number.isFinite(
+                            outTimeMs
+                        ) ||
+                        !resolved.duration ||
+                        resolved.duration <= 0
+                    ) {
+                        continue;
+                    }
+
+                    const seconds =
+                        outTimeMs /
+                        1_000_000;
+
+                    const progress =
+                        Math.min(
+                            99,
+                            Math.max(
+                                0,
+                                Math.floor(
+                                    (
+                                        seconds /
+                                        resolved.duration
+                                    ) *
+                                    100
+                                )
+                            )
+                        );
+
+                    if (
+                        progress !==
+                        lastProgress
+                    ) {
+                        lastProgress =
+                            progress;
+
+                        setDownloadProgress(
+                            videoId,
+                            progress
+                        );
+                    }
+                }
             }
-        });
-
-        ffmpeg.on("error", (err) => {
-            console.error("ffmpeg spawn error:", err.message);
+        );
+        ffmpeg.once("error", (err: Error) => {
             markDownloadFailed(videoId, err.message);
             finish(() => reject(err));
         });
-
-        ffmpeg.on("close", (code) => {
+        ffmpeg.once("close", (code: number | null) => {
             if (code === 0) {
-                // Atomic: progress:100 + status:"completed" written together.
                 markDownloadCompleted(videoId);
-                finish(() => resolve({ title: resolved.title, thumbnail: resolved.thumbnail }));
+                finish(() => resolve({ title: resolved.title, thumbnail: resolved.thumbnail, duration: resolved.duration }));
             } else {
-                console.error("ffmpeg failed:", ffmpegStderr.slice(-500));
-                markDownloadFailed(videoId, `ffmpeg exited ${code}`);
-                finish(() => reject(new Error(`ffmpeg exited ${code}`)));
+                const err = new Error(`ffmpeg exited ${code}`);
+                markDownloadFailed(videoId, err.message);
+                finish(() => reject(err));
             }
         });
-
-        ffmpeg.stdin.on("error", (err: Error) => {
-            // EPIPE etc. — usually harmless if the process already errored,
-            // but log it in case it's the real cause.
-            console.error("ffmpeg stdin error:", err.message);
-        });
-
-        sourceStream.pipe(ffmpeg.stdin);
+        source.pipe(ffmpeg.stdin);
     });
-}
-
-// Streaming variant for direct HTTP passthrough (no disk write, no
-// progress-file cache) — use when you want bytes to reach the client
-// as early as possible and don't need embedded ID3 tags.
-export function downloadAudioStream(
-    videoId: string,
-    format: string = "mp3",
-    quality: string = "0"
-) {
-    // Kept simple/synchronous-looking for the route: the route awaits
-    // getStreamUrl itself and passes the resolved URL in here via a
-    // wrapping async function — see dt-route.ts.
-    throw new Error("Use downloadAudioStreamFromUrl(streamUrl, format, quality) instead");
 }
 
 export function downloadAudioStreamFromUrl(
     streamUrl: string,
-    format: string = "mp3",
-    quality: string = "0"
+    format = "mp3",
+    quality = "0",
+    sourceAcodec?: string
 ) {
-    if (format === "m4a") {
-        // No ffmpeg needed — caller should pipe the HTTP response directly.
-        return null;
-    }
+    if (format === "m4a") return null;
 
-    const ffmpeg = spawn("ffmpeg", [
+    const args = [
+        "-hide_banner", "-loglevel", "error",
         "-i", "pipe:0",
-        "-f", format,
         "-vn",
-        "-codec:a", format === "mp3" ? "libmp3lame" : "copy",
-        "-b:a", quality === "0" ? "320k" : `${quality}k`,
+        ...pickAudioCodecArgs(format, quality, sourceAcodec),
+        "-f", format === "mp3" ? "mp3" : format,
         "pipe:1",
-    ]);
+    ];
 
-    ffmpeg.stderr.on("data", (d: Buffer) => {
-        // Keep for debugging but don't spam logs at info level.
-        if (process.env.DEBUG_FFMPEG) console.log("FFMPEG:", d.toString());
-    });
-
-    ffmpeg.on("error", (err) => console.error("ffmpeg spawn error:", err.message));
-
-    return ffmpeg;
+    return spawn("ffmpeg", args);
 }
+
+export { openCdn };

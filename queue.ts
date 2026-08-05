@@ -1,14 +1,24 @@
 import PQueue from "p-queue";
 
-export const extractionQueue =
-    new PQueue({
-        concurrency:
-            Number(
-                process.env
-                    .MAX_CONCURRENT || 2
-            ),
+/**
+ * Central yt-dlp extraction queue.
+ *
+ * Keep extraction concurrency limited because yt-dlp is CPU/network
+ * intensive and spawning too many processes makes everything slower.
+ *
+ * MAX_CONCURRENT can be configured through the environment.
+ */
+const configuredConcurrency = Number(
+    process.env.MAX_CONCURRENT
+);
 
-        timeout: 120000,
+const concurrency =
+    Number.isFinite(configuredConcurrency) &&
+        configuredConcurrency > 0
+        ? Math.floor(configuredConcurrency)
+        : 2;
 
-        // throwOnTimeout: true,
-    });
+export const extractionQueue = new PQueue({
+    concurrency,
+    timeout: 120_000,
+});

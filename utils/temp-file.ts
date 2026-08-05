@@ -1,16 +1,3 @@
-// import fs from "fs";
-// import path from "path";
-
-// const TEMP_DIR = path.join(process.cwd(), "temp");
-
-// if (!fs.existsSync(TEMP_DIR)) {
-//     fs.mkdirSync(TEMP_DIR, { recursive: true });
-// }
-
-// export function getTempPath(filename: string) {
-//     return path.join(TEMP_DIR, filename);
-// }
-
 import path from "path";
 import os from "os";
 import fs from "fs";
