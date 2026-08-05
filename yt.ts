@@ -14,14 +14,14 @@ export interface ExtractedAudio {
     httpHeaders?: Record<string, string>;
 }
 
-type ClientName = "android" | "web" | "ios" | "default";
+type ClientName = "default" | "android" | "web" | "ios";
 
 // Remember the client that most recently succeeded. This makes a Railway
 // process converge on the working extractor instead of paying for the same
 // failed client attempts on every new song.
 let preferredClient: ClientName = "android";
 
-const CLIENTS: ClientName[] = ["android", "default", "web", "ios"];
+const CLIENTS: ClientName[] = ["default", "android", "web", "ios"];
 
 function orderedClients(): ClientName[] {
     return [
