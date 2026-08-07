@@ -285,7 +285,7 @@ export async function fetchAudio(
         fragmentRetries,
         socketTimeout,
         skipDownload: true,
-        ...cookieOption,
+        // ...cookieOption,
     };
 
     let lastError: Error | undefined;
