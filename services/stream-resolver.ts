@@ -122,122 +122,160 @@ import {
     audioCache,
     staleCache,
     cacheKey,
-    isDefaultQuality,
 } from "../cache";
 
-import { extractionQueue } from "../queue";
-import { fetchAudio } from "../yt";
-import type { AudioQuality } from "../yt";
-import { withInflightDedup } from "./inflight";
+import {
+    extractionQueue,
+} from "../queue";
+
+import {
+    fetchAudio,
+} from "../yt";
+
+import type {
+    AudioQuality,
+    ClientName,
+} from "../yt";
+
+import {
+    withInflightDedup,
+} from "./inflight";
 
 export interface ResolvedStream {
     url: string;
+
     title: string;
+
     duration?: number;
+
     thumbnail: string;
+
     formatId?: string;
+
     ext?: string;
+
     acodec?: string;
+
     vcodec?: string;
+
     abr?: number;
+
+    httpHeaders?: Record<string, string>;
+
+    client?: ClientName;
 }
 
-function withFallbackThumbnail(
-    videoId: string,
-    thumbnail?: string
-): string {
-    return (
-        thumbnail ||
-        `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`
-    );
-}
-
-/**
- * Extract a fresh YouTube stream.
- *
- * Queueing happens here so every consumer uses the same extraction limit.
- */
 async function extractFresh(
     videoId: string,
     quality?: AudioQuality
 ): Promise<ResolvedStream> {
-    const result = await extractionQueue.add(
-        async () => {
-            const audio = await fetchAudio(videoId, { quality });
+    const audio =
+        await extractionQueue.add(
+            () =>
+                fetchAudio(
+                    videoId,
+                    {
+                        quality,
+                        debug: true,
+                    }
+                )
+        );
 
-            if (!audio?.url) {
-                throw new Error("NO_STREAM_URL");
-            }
-
-            return audio;
-        }
-    );
+    if (!audio?.url) {
+        throw new Error(
+            "NO_STREAM_URL"
+        );
+    }
 
     const resolved: ResolvedStream = {
-        url: result.url,
-        title: result.title || videoId,
-        duration: result.duration,
-        thumbnail: withFallbackThumbnail(
+        url:
+            audio.url,
+
+        title:
+            audio.title ||
             videoId,
-            result.thumbnail
-        ),
-        formatId: result.formatId,
-        ext: result.ext,
-        acodec: result.acodec,
-        vcodec: result.vcodec,
-        abr: result.abr,
+
+        duration:
+            audio.duration,
+
+        thumbnail:
+            audio.thumbnail ||
+            `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+
+        formatId:
+            audio.formatId,
+
+        ext:
+            audio.ext,
+
+        acodec:
+            audio.acodec,
+
+        vcodec:
+            audio.vcodec,
+
+        abr:
+            audio.abr,
+
+        httpHeaders:
+            audio.httpHeaders,
+
+        client:
+            audio.client,
     };
 
-    const key = cacheKey(videoId, quality);
+    const key =
+        cacheKey(
+            videoId,
+            quality
+        );
 
-    audioCache.set(key, resolved);
-    staleCache.set(key, resolved);
+    audioCache.set(
+        key,
+        resolved
+    );
+
+    staleCache.set(
+        key,
+        resolved
+    );
 
     return resolved;
 }
 
-/**
- * Single source of truth for obtaining a playable stream.
- *
- * Fast path:
- *   memory cache
- *
- * Fallback:
- *   stale cache
- *
- * Fresh path:
- *   yt-dlp
- *
- * Concurrent calls for the same video share the same extraction.
- */
 export async function getStreamUrl(
     videoId: string,
     forceRefresh = false,
     quality?: AudioQuality
 ): Promise<ResolvedStream> {
-    const key = cacheKey(videoId, quality);
+    const key =
+        cacheKey(
+            videoId,
+            quality
+        );
 
     if (!forceRefresh) {
         const cached =
-            audioCache.get<ResolvedStream>(key);
+            audioCache.get<ResolvedStream>(
+                key
+            );
 
         if (cached?.url) {
             return cached;
         }
-
-        const stale =
-            staleCache.get<ResolvedStream>(key);
-
-        if (stale?.url) {
-            return stale;
-        }
     }
 
     const inflightKey =
-        isDefaultQuality(quality) ? `extract:${videoId}` : `extract:${videoId}:${quality}`;
+        quality
+            ? `extract:${videoId}:${quality}`
+            : `extract:${videoId}`;
 
     return withInflightDedup(
         inflightKey,
-        () => extractFresh(videoId, quality)
+        () =>
+            extractFresh(
+                videoId,
+                quality
+            )
     );
 }
