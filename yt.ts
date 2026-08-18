@@ -1332,7 +1332,7 @@ const CLIENTS = [
 export type ClientName =
     (typeof CLIENTS)[number];
 
-let preferredClient: ClientName = "web_embedded";
+let preferredClient: ClientName = "default";
 
 /*
  * When a client's stream URL gets rejected at playback time (403/410),

@@ -871,7 +871,7 @@ router.get(
                 result.response.status === 410
             ) {
                 console.warn(
-                    `/play ${result.response.status}; refreshing ${videoId}`
+                    `/play ${new Date().toLocaleString()} ${result.response.status}; refreshing ${videoId}`
                 );
 
                 result.response
@@ -914,7 +914,7 @@ router.get(
                     ?.destroy?.();
 
                 console.error(
-                    `/play ${videoId}: upstream ${upstream.status}`
+                    `/play ${new Date().toLocaleString()} ${videoId}: upstream ${upstream.status} `
                 );
 
                 return res
@@ -1044,7 +1044,7 @@ router.get(
                 return res
                     .status(500)
                     .send(
-                        "Error streaming audio"
+                        `Error streaming audio  Date ${new Date().toLocaleString()} ${res}`
                     );
             }
         }
