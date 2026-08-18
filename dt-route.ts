@@ -496,8 +496,8 @@ router.get(
                             ? [artworkParam]
                             : [
                                 `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
-                                `https://i.ytimg.com/vi/${videoId}/sddefault.jpg`,
-                                `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                                // `https://i.ytimg.com/vi/${videoId}/sddefault.jpg`,
+                                // `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
                             ];
 
                     for (const artworkUrl of candidates) {
