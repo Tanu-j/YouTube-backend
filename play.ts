@@ -1044,7 +1044,7 @@ router.get(
                 return res
                     .status(500)
                     .send(
-                        `Error streaming audio  Date ${new Date().toLocaleString()} ${res}`
+                        `Error streaming audio  Date ${new Date().toLocaleString()} ${res.status}`
                     );
             }
         }
