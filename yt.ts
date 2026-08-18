@@ -128,7 +128,7 @@
 
 
 import fs from "fs";
-import ytdlp from "yt-dlp-exec";
+import ytDlp from "youtube-dl-exec";
 
 // --- Interfaces ---
 // Align with the actual structure returned by ytdlp
@@ -296,7 +296,7 @@ export async function fetchAudio(
             const extractorArgs = clientArgs(client);
             const ytdlpOptions = extractorArgs ? { ...baseOptions, extractorArgs } : baseOptions;
 
-            const response = await ytdlp(watchUrl, ytdlpOptions);
+            const response = await ytDlp(watchUrl, ytdlpOptions);
             if (!isYtResponse(response)) {
                 throw new YouTubeExtractionError("Invalid response format");
             }
