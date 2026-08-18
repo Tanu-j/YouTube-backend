@@ -122,6 +122,7 @@ import {
     audioCache,
     staleCache,
     cacheKey,
+    isDefaultQuality,
 } from "../cache";
 
 import { extractionQueue } from "../queue";
@@ -233,7 +234,7 @@ export async function getStreamUrl(
     }
 
     const inflightKey =
-        quality ? `extract:${videoId}:${quality}` : `extract:${videoId}`;
+        isDefaultQuality(quality) ? `extract:${videoId}` : `extract:${videoId}:${quality}`;
 
     return withInflightDedup(
         inflightKey,

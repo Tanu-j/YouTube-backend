@@ -644,7 +644,6 @@
 //         );
 //     }
 // );
-
 import dotenv from "dotenv";
 
 // Load the correct environment before application startup.
@@ -674,6 +673,7 @@ import {
     audioCache,
     staleCache,
     cacheKey,
+    isDefaultQuality,
 } from "./cache";
 
 import {
@@ -685,7 +685,6 @@ import {
 } from "./services/stream-resolver";
 
 import { isAudioQuality } from "./yt";
-
 import {
     writeCookiesFromEnv,
 } from "./startup-cookies";
@@ -909,7 +908,7 @@ app.get(
              */
             const resolved =
                 await withInflightDedup(
-                    quality ? `audio:${videoId}:${quality}` : `audio:${videoId}`,
+                    isDefaultQuality(quality) ? `audio:${videoId}` : `audio:${videoId}:${quality}`,
                     () =>
                         getStreamUrl(
                             videoId,

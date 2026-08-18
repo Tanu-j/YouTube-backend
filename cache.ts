@@ -45,7 +45,11 @@ export const staleCache =
         checkperiod: 300,
         useClones: false,
     });
+export const isDefaultQuality = (quality?: string) =>
+    !quality || quality === "high" || quality === "lossless";
 
 export const cacheKey =
     (videoId: string, quality?: string) =>
-        quality ? `audio:${videoId}:${quality}` : `audio:${videoId}`;
+        isDefaultQuality(quality)
+            ? `audio:${videoId}`
+            : `audio:${videoId}:${quality}`;
