@@ -1268,7 +1268,7 @@
 // // })();
 
 import fs from "fs";
-import ytdlp from "yt-dlp-exec";
+import ytDlp from "youtube-dl-exec";
 
 export interface ExtractedAudio {
     title?: string;
@@ -1320,10 +1320,10 @@ export type AudioQuality =
  * See: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
  */
 const CLIENTS = [
-    "android_vr",
     "web_embedded",
-    "tv",
+    "android_vr",
     "default",
+    "tv",
     "android",
     "ios",
     "web",
@@ -1332,7 +1332,7 @@ const CLIENTS = [
 export type ClientName =
     (typeof CLIENTS)[number];
 
-let preferredClient: ClientName = "android_vr";
+let preferredClient: ClientName = "web_embedded";
 
 /*
  * When a client's stream URL gets rejected at playback time (403/410),
@@ -1547,7 +1547,7 @@ export async function fetchAudio(
             };
 
             const result =
-                await ytdlp(
+                await ytDlp(
                     url,
                     options
                 ) as unknown as YtResponse;
