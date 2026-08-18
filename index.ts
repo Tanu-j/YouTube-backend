@@ -740,6 +740,33 @@ app.disable(
 );
 
 /**
+ * Health check endpoint.
+ *
+ * Used by Railway / uptime monitors / load balancers
+ * to verify the process is alive and responsive.
+ *
+ * Registered before the rate limiter so frequent
+ * monitoring polls never get throttled or counted
+ * against the global request limit.
+ */
+app.get(
+    "/health",
+    (
+        req: Request,
+        res: Response
+    ) => {
+        return res
+            .status(200)
+            .json({
+                success: true,
+                status: "ok",
+                uptime: process.uptime(),
+                timestamp: new Date().toISOString(),
+            });
+    }
+);
+
+/**
  * Global request limiter.
  */
 const limiter =
@@ -758,8 +785,14 @@ const limiter =
         // Progress polling is high-frequency and read-only; it gets its
         // own dedicated limiter in dt-route.ts instead of sharing this
         // one, so it can't get starved by other API traffic.
+        //
+        // /health is also exempt (belt-and-suspenders alongside its
+        // route being registered before this middleware), since
+        // uptime monitors poll it frequently and shouldn't be
+        // throttled or eat into other API traffic's quota.
         skip: (req) =>
-            req.path.startsWith("/download-progress"),
+            req.path.startsWith("/download-progress") ||
+            req.path === "/health",
 
         message: {
             success: false,
