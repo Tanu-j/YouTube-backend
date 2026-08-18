@@ -68,122 +68,38 @@ function pickAudioCodecArgs(
 }
 
 
-// async function openCdn(videoId: string) {
-//     let resolved = await getStreamUrl(videoId, false);
-//     let response = await axios.get(resolved.url, {
-//         responseType: "stream",
-//         timeout: 20000,
-//         maxRedirects: 5,
-//         validateStatus: () => true,
-//         headers: getCdnRequestHeaders(),
-//         httpsAgent,
-//     });
+async function openCdn(videoId: string) {
+    let resolved = await getStreamUrl(videoId, false);
+    let response = await axios.get(resolved.url, {
+        responseType: "stream",
+        timeout: 20000,
+        maxRedirects: 5,
+        validateStatus: () => true,
+        headers: getCdnRequestHeaders(),
+        httpsAgent,
+    });
 
-//     if (response.status === 403 || response.status === 410) {
-//         response.data?.destroy?.();
-//         resolved = await getStreamUrl(videoId, true);
-//         response = await axios.get(resolved.url, {
-//             responseType: "stream",
-//             timeout: 20000,
-//             maxRedirects: 5,
-//             validateStatus: () => true,
-//             headers: getCdnRequestHeaders(),
-//             httpsAgent,
-//         });
-//     }
-
-//     if (response.status < 200 || response.status >= 300) {
-//         response.data?.destroy?.();
-//         throw new Error(`CDN_STREAM_${response.status}`);
-//     }
-
-//     return { resolved, response };
-// }
-async function openCdn(
-    videoId: string
-) {
-    let resolved =
-        await getStreamUrl(
-            videoId,
-            false
-        );
-
-    let response =
-        await axios.get(
-            resolved.url,
-            {
-                responseType: "stream",
-
-                timeout: 20_000,
-
-                maxRedirects: 5,
-
-                validateStatus:
-                    () => true,
-
-                headers:
-                    getCdnRequestHeaders(
-                        resolved.httpHeaders
-                    ),
-
-                httpsAgent,
-            }
-        );
-
-    if (
-        response.status === 403 ||
-        response.status === 410
-    ) {
+    if (response.status === 403 || response.status === 410) {
         response.data?.destroy?.();
-
-        resolved =
-            await getStreamUrl(
-                videoId,
-                true
-            );
-
-        response =
-            await axios.get(
-                resolved.url,
-                {
-                    responseType:
-                        "stream",
-
-                    timeout:
-                        20_000,
-
-                    maxRedirects:
-                        5,
-
-                    validateStatus:
-                        () => true,
-
-                    headers:
-                        getCdnRequestHeaders(
-                            resolved.httpHeaders
-                        ),
-
-                    httpsAgent,
-                }
-            );
+        resolved = await getStreamUrl(videoId, true);
+        response = await axios.get(resolved.url, {
+            responseType: "stream",
+            timeout: 20000,
+            maxRedirects: 5,
+            validateStatus: () => true,
+            headers: getCdnRequestHeaders(),
+            httpsAgent,
+        });
     }
 
-    if (
-        response.status < 200 ||
-        response.status >= 300
-    ) {
+    if (response.status < 200 || response.status >= 300) {
         response.data?.destroy?.();
-
-        throw new Error(
-            `CDN_STREAM_${response.status}`
-        );
+        throw new Error(`CDN_STREAM_${response.status}`);
     }
 
-    return {
-        resolved,
-        response,
-    };
+    return { resolved, response };
 }
+
 /**
  * Legacy disk-building API retained for callers that need a completed file.
  * It now avoids all unnecessary work for m4a and uses the same 403-safe
@@ -268,7 +184,7 @@ export async function downloadAudioToFile(
                         );
                     }
                 }
-            );
+                );
 
             output.once(
                 "error",
